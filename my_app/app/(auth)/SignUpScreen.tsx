@@ -1,3 +1,6 @@
+import { doc, setDoc } from "firebase/firestore";
+import { db } from "../../firebaseConfig";
+
 import React, { useState } from 'react';
 import {
   View,
@@ -33,13 +36,25 @@ export default function SignUpScreen() {
 
     try {
       setLoading(true);
+
       const { user } = await createUserWithEmailAndPassword(
         auth,
         trimmedEmail,
         trimmedPassword
       );
+
+      // ✅ STORE ROLE IN FIRESTORE
+      await setDoc(doc(db, "users", user.uid), {
+        email: trimmedEmail,
+        role: role,
+        createdAt: new Date(),
+      });
+
+      // (Optional cache)
       await AsyncStorage.setItem(`role_${user.uid}`, role);
+
       router.replace(`/(app)/${role}/dashboard` as any);
+
     } catch (error: any) {
       Alert.alert('Error', error.message);
     } finally {

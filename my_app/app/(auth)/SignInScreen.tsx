@@ -10,7 +10,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { signInWithEmailAndPassword } from 'firebase/auth';
-import { auth } from '../../firebaseConfig';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '../../firebaseConfig';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -33,12 +34,26 @@ export default function SignInScreen() {
     try {
       setLoading(true);
       const { user } = await signInWithEmailAndPassword(auth, trimmedEmail, trimmedPassword);
-      const role = await AsyncStorage.getItem(`role_${user.uid}`);
+      
+      // ✅ FETCH ROLE FROM FIRESTORE
+      const userDocRef = doc(db, 'users', user.uid);
+      const userDoc = await getDoc(userDocRef);
+
+      if (!userDoc.exists()) {
+        Alert.alert('Error', 'User data not found.');
+        return;
+      }
+
+      const userData = userDoc.data();
+      const role = userData.role;
 
       if (!role) {
         Alert.alert('Error', 'User role not found.');
         return;
       }
+
+      // (Optional) Cache role in AsyncStorage for offline access
+      await AsyncStorage.setItem(`role_${user.uid}`, role);
 
       router.replace(`/(app)/${role}/dashboard` as any);
     } catch (error: any) {
@@ -95,7 +110,7 @@ export default function SignInScreen() {
           </TouchableOpacity>
 
           <Text style={styles.footerText}>
-            Don’t have an account?{' '}
+            Don't have an account?{' '}
             <Text style={styles.link} onPress={() => router.push('/(auth)/SignUpScreen')}>
               Sign Up
             </Text>
