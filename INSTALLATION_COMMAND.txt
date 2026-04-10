@@ -1,0 +1,31 @@
+══════════════════════════════════════════════════════════════
+  🚀 QUICK INSTALLATION COMMAND
+══════════════════════════════════════════════════════════════
+
+📋 Copy & paste this single command:
+
+npm install expo-av expo-speech axios buffer firebase react-native-svg
+
+═══════════════════════════════════════════════════════════════
+
+⏱️  What to expect:
+   ✅ 2-3 minutes to download
+   ✅ 1 minute to install
+   ✅ Total: ~5 minutes
+
+═══════════════════════════════════════════════════════════════
+
+▶️  THEN START THE APP:
+
+Terminal 1 (Backend):
+  cd alztwin-backend
+  npm run dev
+
+Terminal 2 (Frontend):
+  npm start
+
+═══════════════════════════════════════════════════════════════
+
+✨ That's all! No other setup needed.
+
+═══════════════════════════════════════════════════════════════
