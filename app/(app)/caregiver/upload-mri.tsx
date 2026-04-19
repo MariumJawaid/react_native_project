@@ -13,6 +13,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system'; // ← New modern Expo FileSystem API
 import { useRouter } from 'expo-router';
 import { auth, db } from '../../../firebaseConfig';
+import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, updateDoc, collection, addDoc, arrayUnion } from 'firebase/firestore';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,31 +25,28 @@ export default function UploadMRIScreen() {
   const [patientId, setPatientId] = useState<string | null>(null);
   const [patientName, setPatientName] = useState<string>('');
 
+  // ✅ Wait for Firebase Auth to restore session before touching Firestore
   useEffect(() => {
-    loadPatientInfo();
-  }, []);
-
-  const loadPatientInfo = async () => {
-    try {
-      const caregiverUID = auth.currentUser?.uid;
-      if (!caregiverUID) return;
-
-      const userDoc = await getDoc(doc(db, 'users', caregiverUID));
-      if (userDoc.exists()) {
-        const userData = userDoc.data();
-        if (userData.patientId) {
-          setPatientId(userData.patientId);
-
-          const patientDoc = await getDoc(doc(db, 'patients', userData.patientId));
-          if (patientDoc.exists()) {
-            setPatientName(patientDoc.data().name);
+    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      if (!user) return;
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          if (userData.patientId) {
+            setPatientId(userData.patientId);
+            const patientDoc = await getDoc(doc(db, 'patients', userData.patientId));
+            if (patientDoc.exists()) {
+              setPatientName(patientDoc.data().name);
+            }
           }
         }
+      } catch (error) {
+        console.error('Error loading patient:', error);
       }
-    } catch (error) {
-      console.error('Error loading patient:', error);
-    }
-  };
+    });
+    return () => unsubAuth();
+  }, []);
 
   const pickDICOMFile = async () => {
     try {

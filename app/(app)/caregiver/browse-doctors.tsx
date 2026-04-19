@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../../../firebaseConfig';
+import { onAuthStateChanged } from 'firebase/auth';
 import { collection, getDocs, doc, getDoc, addDoc } from 'firebase/firestore';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -27,35 +28,52 @@ export default function BrowseCliniciansScreen() {
   const [summary, setSummary] = useState('');
   const [sending, setSending] = useState(false);
 
+  // ✅ Wait for Firebase Auth to restore session before touching Firestore
   useEffect(() => {
-    loadClinicians();
-    loadPatientId();
-  }, []);
+    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      // Both Firestore calls require auth — guard before calling either
+      if (!user) return;
 
-  const loadPatientId = async () => {
-    try {
-      const caregiverUID = auth.currentUser?.uid;
-      if (!caregiverUID) return;
-      const userDoc = await getDoc(doc(db, 'users', caregiverUID));
-      if (userDoc.exists()) {
-        const userData = userDoc.data();
-        setPatientId(userData.patientId || null);
+      // Load clinicians only after auth is confirmed
+      loadClinicians();
+
+      // Load linked patient ID
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          setPatientId(userDoc.data().patientId || null);
+        }
+      } catch (error) {
+        console.error('Error loading patient ID:', error);
       }
-    } catch (error) {
-      console.error('Error loading patient ID:', error);
-    }
-  };
+    });
+    return () => unsubAuth();
+  }, []);
 
   const loadClinicians = async () => {
     try {
       setLoading(true);
-      // Changed from 'clinician' to 'clinicians' to match your database
-      const querySnapshot = await getDocs(collection(db, 'clinicians'));
-      const cliniciansList = querySnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
+      // Only query 'clinicians' — the 'clinician' collection has no Firestore security rule
+      // and will always return permission-denied even for authenticated users
+      let querySnapshot = await getDocs(collection(db, 'clinicians'));
+      if (querySnapshot.empty) {
+        querySnapshot = await getDocs(collection(db, 'clinicians'));
+      }
+      const cliniciansList = querySnapshot.docs.map((docSnap) => ({
+        id: docSnap.id,
+        // Feature 7 fields
+        fullName: docSnap.data().fullName || 'Unknown',
+        specialization: docSnap.data().specialization || 'N/A',
+        licenseNumber: docSnap.data().licenseNumber || 'N/A',
+        hospital: docSnap.data().hospital || 'N/A',
+        patientsCount: docSnap.data().patientsCount || 0,
+        yearsOfExperience: docSnap.data().yearsOfExperience || 0,
+        clinicAddress: docSnap.data().clinicAddress || docSnap.data().address || 'N/A',
+        // extra fields that may exist
+        email: docSnap.data().email || 'N/A',
+        phone: docSnap.data().phone || 'N/A',
+        qualifications: docSnap.data().qualifications || 'N/A',
       }));
-      console.log('Loaded clinicians:', cliniciansList); // Debug log
       setClinicians(cliniciansList);
     } catch (error) {
       console.error('Error loading clinicians:', error);
@@ -180,8 +198,8 @@ export default function BrowseCliniciansScreen() {
                 <Text style={styles.detailValue}>{selectedClinician.hospital || 'N/A'}</Text>
               </View>
               <View style={styles.detailSection}>
-                <Text style={styles.detailLabel}>Address:</Text>
-                <Text style={styles.detailValue}>{selectedClinician.address || 'N/A'}</Text>
+                <Text style={styles.detailLabel}>Clinic Address:</Text>
+                <Text style={styles.detailValue}>{selectedClinician.clinicAddress || 'N/A'}</Text>
               </View>
               <View style={styles.detailSection}>
                 <Text style={styles.detailLabel}>Qualifications:</Text>

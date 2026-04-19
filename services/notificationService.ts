@@ -3,11 +3,12 @@ import { Alert } from 'react-native';
 
 export interface Notification {
   id: string;
-  type: 'fall' | 'zone' | 'health' | 'info';
+  type: 'fall' | 'zone' | 'health' | 'info' | 'consult_accepted';
   title: string;
   message: string;
   timestamp: number;
   read: boolean;
+  data?: any;
 }
 
 const NOTIFICATIONS_KEY = 'app_notifications';
@@ -26,9 +27,10 @@ export const notificationService = {
 
   // Add a new notification
   async addNotification(
-    type: 'fall' | 'zone' | 'health' | 'info',
+    type: 'fall' | 'zone' | 'health' | 'info' | 'consult_accepted',
     title: string,
-    message: string
+    message: string,
+    dataPayload?: any
   ): Promise<Notification> {
     try {
       const notifications = await this.getAllNotifications();
@@ -40,6 +42,7 @@ export const notificationService = {
         message,
         timestamp: Date.now(),
         read: false,
+        data: dataPayload,
       };
 
       notifications.unshift(newNotification); // Add to beginning

@@ -14,6 +14,8 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { db } from '../../../firebaseConfig';
+import { doc, updateDoc } from 'firebase/firestore';
 import { notificationService, Notification } from '../../../services/notificationService';
 
 export default function NotificationsScreen() {
@@ -134,10 +136,48 @@ export default function NotificationsScreen() {
     return date.toLocaleDateString();
   };
 
+  const handleNotificationPress = (item: Notification) => {
+    handleMarkAsRead(item.id);
+    
+    if (item.type === 'consult_accepted' && item.data) {
+      Alert.alert(
+        'Consultation Ready',
+        item.message,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'OK', 
+            onPress: async () => {
+              try {
+                // Permanently link the clinician to the patient in the DB
+                if (item.data.patientId && item.data.clinicianId) {
+                  await updateDoc(doc(db, 'patients', item.data.patientId), {
+                    clinicianId: item.data.clinicianId 
+                  });
+                }
+              } catch (err) {
+                console.error("Failed to link clinician to patient", err);
+              }
+
+              router.push({
+                pathname: '/(app)/caregiver/contact-clinician' as any,
+                params: {
+                  clinicianId: item.data.clinicianId,
+                  clinicianName: item.data.clinicianName,
+                  patientId: item.data.patientId,
+                }
+              });
+            }
+          }
+        ]
+      );
+    }
+  };
+
   const renderNotification: ListRenderItem<Notification> = ({ item }) => (
     <TouchableOpacity
       style={[styles.notificationItem, !item.read && styles.notificationItemUnread]}
-      onPress={() => handleMarkAsRead(item.id)}
+      onPress={() => handleNotificationPress(item)}
     >
       <View style={[styles.iconContainer, { backgroundColor: getNotificationColor(item.type) + '20' }]}>
         <Ionicons
