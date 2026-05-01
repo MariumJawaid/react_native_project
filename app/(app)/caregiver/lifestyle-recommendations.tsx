@@ -9,12 +9,38 @@ import {
   StatusBar,
   Image,
   Dimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 
 const { width } = Dimensions.get('window');
+
+// ─── Markdown parser for inline bold text ───
+const parseMarkdown = (text: string) => {
+  const parts: Array<{ text: string; bold: boolean }> = [];
+  let lastIndex = 0;
+  const regex = /\*\*([^*]+)\*\*/g;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    // Add normal text before the bold
+    if (match.index > lastIndex) {
+      parts.push({ text: text.slice(lastIndex, match.index), bold: false });
+    }
+    // Add bold text
+    parts.push({ text: match[1], bold: true });
+    lastIndex = regex.lastIndex;
+  }
+
+  // Add remaining text
+  if (lastIndex < text.length) {
+    parts.push({ text: text.slice(lastIndex), bold: false });
+  }
+
+  return parts.length > 0 ? parts : [{ text, bold: false }];
+};
 
 // ─── Static recommendation data (medically accurate for Alzheimer's patients) ───
 const RECOMMENDATIONS = [
@@ -90,7 +116,7 @@ const RECOMMENDATIONS = [
     category: 'Safety',
     categoryColor: '#b45309',
     categoryBg: '#fef3c7',
-    image: 'https://images.unsplash.com/photo-1476611338391-6f395a0dd82e?w=800&q=80',
+    image: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=800&q=80',
     shortDescription:
       'Wandering occurs in 60% of Alzheimer\'s patients. Structured outdoor time reduces this risk while providing vital benefits.',
     fullContent: `Wandering is one of the most dangerous behaviors in Alzheimer's — and also one of the most preventable with proper management.\n\n**Why Patients Wander:**\n• Boredom or restlessness\n• Looking for something familiar (a past home or workplace)\n• Responding to hallucinations or delusions\n• Pain, hunger, or need to use the bathroom\n• Anxiety or confusion about time/place\n\n**Prevention Strategies:**\n• Install door alarms or keypads (6-digit codes rather than simple locks)\n• Use door camouflage (paint or wallpaper that makes exits less visible)\n• Place STOP signs at exit-level sight lines\n• Create a safe, enclosed garden or yard for supervised outdoor time\n\n**Safe Outdoor Time Benefits:**\n• 15–20 min of sunlight daily regulates circadian rhythm and provides vitamin D\n• Physical activity reduces restlessness that leads to wandering\n• Nature exposure reduces agitation and cortisol levels\n\n**Emergency Preparedness:**\n• Enroll in a GPS tracking/monitoring program\n• Register with local police "Project Lifesaver" or equivalent\n• Ensure the patient wears ID at all times (medical ID bracelet)\n• Have a recent photo for rapid distribution\n• Brief all neighbors about the patient's condition\n\n📍 This app's GPS monitoring feature provides real-time location tracking and geofence alerts to support wandering prevention.`,
@@ -113,6 +139,7 @@ export default function LifestyleRecommendationsScreen() {
   const router = useRouter();
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [imageLoadErrors, setImageLoadErrors] = useState<Set<string>>(new Set());
 
   // Filter recommendations by category
   const filteredRecommendations =
@@ -122,6 +149,10 @@ export default function LifestyleRecommendationsScreen() {
 
   const toggleExpand = (id: string) => {
     setExpandedId((prev) => (prev === id ? null : id));
+  };
+
+  const handleImageError = (id: string) => {
+    setImageLoadErrors((prev) => new Set([...prev, id]));
   };
 
   return (
@@ -138,9 +169,7 @@ export default function LifestyleRecommendationsScreen() {
             <Text style={styles.headerTitle}>Lifestyle Tips</Text>
             <Text style={styles.headerSubtitle}>Alzheimer's Care Guide</Text>
           </View>
-          <View style={styles.headerIconCircle}>
-            <Ionicons name="heart" size={22} color="#fff" />
-          </View>
+
         </View>
 
         {/* Category Filter Chips */}
@@ -187,14 +216,24 @@ export default function LifestyleRecommendationsScreen() {
 
         {filteredRecommendations.map((item) => {
           const isExpanded = expandedId === item.id;
+          const hasImageError = imageLoadErrors.has(item.id);
+
           return (
             <View key={item.id} style={styles.card}>
               {/* Card Image */}
-              <Image
-                source={{ uri: item.image }}
-                style={styles.cardImage}
-                resizeMode="cover"
-              />
+              {hasImageError ? (
+                <View style={[styles.cardImage, styles.imagePlaceholder]}>
+                  <Ionicons name="image-outline" size={40} color="rgba(100,116,139,0.5)" />
+                  <Text style={styles.imagePlaceholderText}>Image not available</Text>
+                </View>
+              ) : (
+                <Image
+                  source={{ uri: item.image }}
+                  style={styles.cardImage}
+                  resizeMode="cover"
+                  onError={() => handleImageError(item.id)}
+                />
+              )}
 
               {/* Category Badge */}
               <View style={[styles.categoryBadge, { backgroundColor: item.categoryBg }]}>
@@ -215,7 +254,6 @@ export default function LifestyleRecommendationsScreen() {
                     {item.fullContent.split('\n').map((line, idx) => {
                       // Bold lines that start with **
                       const boldMatch = line.match(/^\*\*(.+)\*\*$/);
-                      const hasBoldInline = line.includes('**') && !boldMatch;
                       if (boldMatch) {
                         return (
                           <Text key={idx} style={styles.contentBoldLine}>
@@ -224,17 +262,33 @@ export default function LifestyleRecommendationsScreen() {
                         );
                       }
                       if (line.trim() === '') return <View key={idx} style={{ height: 8 }} />;
+                      
                       // Bullet points
-                      if (line.startsWith('• ') || line.startsWith('🌅') || line.startsWith('☀️') || line.startsWith('🌆') || line.startsWith('🌙')) {
+                      const isBulletLine = line.startsWith('• ') || line.startsWith('🌅') || line.startsWith('☀️') || line.startsWith('🌆') || line.startsWith('🌙') || line.startsWith('🫐') || line.startsWith('🐟') || line.startsWith('🥦') || line.startsWith('🫒') || line.startsWith('🥜') || line.startsWith('🫘') || line.startsWith('🧈') || line.startsWith('🧀') || line.startsWith('🍖') || line.startsWith('🍟') || line.startsWith('🍰') || line.startsWith('💊') || line.startsWith('📝') || line.startsWith('🤲') || line.startsWith('🧠') || line.startsWith('👥') || line.startsWith('📱') || line.startsWith('🏃') || line.startsWith('💤') || line.startsWith('🆘') || line.startsWith('⚠️') || line.startsWith('📍') || line.startsWith('🕐') || line.startsWith('🚨') || line.startsWith('⌛') || line.startsWith('📋');
+                      
+                      if (isBulletLine) {
+                        // Parse inline markdown in bullet points
+                        const parts = parseMarkdown(line);
                         return (
                           <Text key={idx} style={styles.contentBullet}>
-                            {line}
+                            {parts.map((part, partIdx) => (
+                              <Text key={partIdx} style={part.bold ? styles.contentBoldInline : {}}>
+                                {part.text}
+                              </Text>
+                            ))}
                           </Text>
                         );
                       }
+                      
+                      // Regular text with inline markdown parsing
+                      const parts = parseMarkdown(line);
                       return (
                         <Text key={idx} style={styles.contentText}>
-                          {line}
+                          {parts.map((part, partIdx) => (
+                            <Text key={partIdx} style={part.bold ? styles.contentBoldInline : {}}>
+                              {part.text}
+                            </Text>
+                          ))}
                         </Text>
                       );
                     })}
@@ -290,7 +344,7 @@ const styles = StyleSheet.create({
   headerContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     marginBottom: 20,
   },
   backBtn: {
@@ -314,14 +368,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255,255,255,0.75)',
     marginTop: 2,
-  },
-  headerIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   filterRow: {
     paddingBottom: 4,
@@ -376,6 +422,16 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 180,
   },
+  imagePlaceholder: {
+    backgroundColor: '#f1f5f9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imagePlaceholderText: {
+    fontSize: 12,
+    color: '#94a3b8',
+    marginTop: 8,
+  },
   categoryBadge: {
     position: 'absolute',
     top: 14,
@@ -424,6 +480,10 @@ const styles = StyleSheet.create({
     color: '#1e293b',
     marginTop: 10,
     marginBottom: 4,
+  },
+  contentBoldInline: {
+    fontWeight: '700',
+    color: '#1e293b',
   },
   contentBullet: {
     fontSize: 14,

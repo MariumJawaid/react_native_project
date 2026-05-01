@@ -10,6 +10,8 @@ import {
   ActivityIndicator,
   Dimensions,
   Platform,
+  PermissionsAndroid,
+  Linking,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -49,6 +51,8 @@ export default function TeleconsultationScreen() {
   const clinicianId = params.clinicianId as string | undefined;
   const patientId = params.patientId as string | undefined;
 
+  console.log('[Teleconsultation] Component mounted with params:', { existingRoomId, clinicianId, patientId });
+
   const [callStatus, setCallStatus] = useState<CallStatus>('idle');
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
@@ -71,24 +75,137 @@ export default function TeleconsultationScreen() {
     return `room_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   };
 
+  // Check network connectivity
+  const checkNetworkConnectivity = async (): Promise<boolean> => {
+    try {
+      const response = await fetch('https://www.google.com', { method: 'HEAD', mode: 'no-cors' });
+      return response.ok || response.type === 'opaque';
+    } catch (err) {
+      console.error('[Teleconsultation] Network check failed:', err);
+      return false;
+    }
+  };
+
   const startSession = async () => {
     console.log('[Teleconsultation] Step 1: Initialize');
     try {
       setLoadingSession(true);
+      console.log('[Teleconsultation] Getting current user...');
       const caregiverId = auth.currentUser?.uid;
+      console.log('[Teleconsultation] Current caregiverId:', caregiverId);
       if (!caregiverId) throw new Error('Not authenticated');
+      console.log('[Teleconsultation] Auth check passed');
+
+      // Request camera and microphone permissions on Android
+      if (Platform.OS === 'android') {
+        console.log('[Teleconsultation] Platform is Android, requesting permissions...');
+        try {
+          const granted = await PermissionsAndroid.requestMultiple([
+            PermissionsAndroid.PERMISSIONS.CAMERA,
+            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+          ]);
+          console.log('[Teleconsultation] Permissions result:', granted);
+
+          const cameraGranted = granted[PermissionsAndroid.PERMISSIONS.CAMERA];
+          const audioGranted = granted[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO];
+
+          if (
+            cameraGranted !== PermissionsAndroid.RESULTS.GRANTED ||
+            audioGranted !== PermissionsAndroid.RESULTS.GRANTED
+          ) {
+            console.log('[Teleconsultation] Permissions denied - camera:', cameraGranted, 'audio:', audioGranted);
+            
+            // Check if user selected "never ask again"
+            const isNeverAskAgain = 
+              cameraGranted === 'never_ask_again' || 
+              audioGranted === 'never_ask_again';
+
+            if (isNeverAskAgain) {
+              console.log('[Teleconsultation] Permissions set to never ask again');
+              Alert.alert(
+                'Camera & Microphone Access Required',
+                'Video consultation requires camera and microphone permissions. Please enable them in app settings.',
+                [
+                  { 
+                    text: 'Open Settings', 
+                    onPress: () => {
+                      Linking.openSettings();
+                      setCallStatus('error');
+                      setLoadingSession(false);
+                    }
+                  },
+                  { text: 'Cancel', style: 'cancel', onPress: () => {
+                    setCallStatus('error');
+                    setLoadingSession(false);
+                  }}
+                ]
+              );
+            } else {
+              Alert.alert(
+                'Permissions Required',
+                'Camera and microphone permissions are required for teleconsultation.',
+                [{ text: 'OK', onPress: () => {
+                  setCallStatus('error');
+                  setLoadingSession(false);
+                }}]
+              );
+            }
+            return;
+          }
+          console.log('[Teleconsultation] Permissions granted');
+        } catch (err) {
+          console.error('[Teleconsultation] Permission request error:', err);
+          Alert.alert('Error', 'Failed to request permissions', [{ text: 'OK', onPress: () => {
+            setCallStatus('error');
+            setLoadingSession(false);
+          }}]);
+          return;
+        }
+      } else {
+        console.log('[Teleconsultation] Platform is not Android, skipping permission check');
+      }
+
+      // Check network connectivity before proceeding
+      console.log('[Teleconsultation] Checking network connectivity...');
+      const isConnected = await checkNetworkConnectivity();
+      if (!isConnected) {
+        console.error('[Teleconsultation] No internet connection detected');
+        Alert.alert(
+          'Network Error',
+          'Failed to start consultation: No internet connection. Please check your network and try again.',
+          [{ text: 'OK', onPress: () => {
+            setCallStatus('error');
+            setLoadingSession(false);
+          }}]
+        );
+        return;
+      }
+      console.log('[Teleconsultation] Network connectivity check passed');
 
       let resolvedPatientId = patientId;
       if (!resolvedPatientId) {
-        const userDoc = await getDoc(doc(db, 'users', caregiverId));
-        if (userDoc.exists()) {
-          resolvedPatientId = userDoc.data().patientId;
+        console.log('[Teleconsultation] Resolving patientId from user doc...');
+        try {
+          const userDoc = await getDoc(doc(db, 'users', caregiverId));
+          console.log('[Teleconsultation] User doc exists:', userDoc.exists());
+          if (userDoc.exists()) {
+            resolvedPatientId = userDoc.data().patientId;
+            console.log('[Teleconsultation] Resolved patientId:', resolvedPatientId);
+          } else {
+            console.log('[Teleconsultation] User document does not exist');
+          }
+        } catch (err) {
+          console.error('[Teleconsultation] Error fetching user doc:', err);
         }
+      } else {
+        console.log('[Teleconsultation] PatientId already provided as param:', patientId);
       }
 
       // Step 2: Create the session
+      console.log('[Teleconsultation] Step 2: Creating session');
       const newRoomId = existingRoomId || generateRoomId();
       setRoomId(newRoomId);
+      console.log('[Teleconsultation] Room ID generated:', newRoomId);
 
       const sessionData = {
         roomId: newRoomId,
@@ -100,25 +217,33 @@ export default function TeleconsultationScreen() {
         updatedAt: serverTimestamp(),
       };
 
+      console.log('[Teleconsultation] Session data:', sessionData);
       const sessionRef = await addDoc(collection(db, 'consultation_sessions'), sessionData);
       const currentSessionId = sessionRef.id;
+      console.log('[Teleconsultation] Session created with ID:', currentSessionId);
       setSessionId(currentSessionId);
       setCallStatus('ringing');
+      console.log('[Teleconsultation] Step 2 Complete: Status set to ringing');
 
       // Step 3: Get media + create peer connection
+      console.log('[Teleconsultation] Step 3: Acquiring media stream');
       let stream: MediaStream;
       try {
+        console.log('[Teleconsultation] Requesting camera & microphone...');
         stream = await mediaDevices.getUserMedia({ video: true, audio: true }) as MediaStream;
+        console.log('[Teleconsultation] Media stream acquired:', stream);
         setLocalStream(stream);
         streamRef.current = stream;
+        console.log('[Teleconsultation] Local stream set');
       } catch (err) {
-        console.error('Camera permissions denied', err);
+        console.error('[Teleconsultation] ERROR acquiring media:', err);
         Alert.alert('Camera Error', 'Could not access the camera. Check permissions.');
         setCallStatus('error');
         setLoadingSession(false);
         return;
       }
 
+      console.log('[Teleconsultation] Creating RTCPeerConnection...');
       const pc = new RTCPeerConnection({
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
@@ -126,18 +251,26 @@ export default function TeleconsultationScreen() {
         ],
       });
       pcRef.current = pc;
+      console.log('[Teleconsultation] RTCPeerConnection created');
 
       // Attach tracks
+      console.log('[Teleconsultation] Attaching tracks to peer connection...');
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+      console.log('[Teleconsultation] Tracks attached');
 
       // Attach handlers before creating offer
-      pc.ontrack = (e) => {
+      // @ts-ignore - react-native-webrtc types sometimes miss ontrack
+      pc.ontrack = (e: any) => {
         if (e.streams && e.streams[0]) {
           setRemoteStream(e.streams[0]);
+        } else if (e.stream) {
+          // Fallback for older react-native-webrtc versions
+          setRemoteStream(e.stream);
         }
       };
 
-      pc.onicecandidate = (e) => {
+      // @ts-ignore - react-native-webrtc types sometimes miss onicecandidate
+      pc.onicecandidate = (e: any) => {
         if (!e.candidate) return;
         addDoc(collection(db, "webrtc_signals"), {
           sessionId: currentSessionId,
@@ -149,14 +282,18 @@ export default function TeleconsultationScreen() {
         });
       };
 
+      // @ts-ignore
       pc.onconnectionstatechange = () => {
         console.log("PC Connection State:", pc.connectionState);
       };
 
       // Step 4: Write the offer
+      console.log('[Teleconsultation] Step 4: Creating WebRTC offer');
       const offer = await pc.createOffer({});
       await pc.setLocalDescription(offer);
+      console.log('[Teleconsultation] Offer created and set as local description');
 
+      console.log('[Teleconsultation] Sending offer to Firestore webrtc_signals...');
       await addDoc(collection(db, "webrtc_signals"), {
         sessionId: currentSessionId,
         type: "offer",
@@ -165,27 +302,38 @@ export default function TeleconsultationScreen() {
         createdAt: serverTimestamp(),
         processed: false,
       });
+      console.log('[Teleconsultation] Offer sent to webrtc_signals');
 
       // Step 5: Listen for clinician's answer + ICE
+      console.log('[Teleconsultation] Step 5: Setting up signal listeners');
       const unsubSignals = onSnapshot(
         query(collection(db, "webrtc_signals"), where("sessionId", "==", currentSessionId)),
         async (snap) => {
+          console.log('[Teleconsultation] Signal listener triggered, changes:', snap.docChanges().length);
           for (const change of snap.docChanges()) {
             if (change.type !== "added") continue;
             const d = change.doc.data();
-            if (d.fromUserId === caregiverId) continue; // skip own
+            console.log('[Teleconsultation] Received signal type:', d.type, 'from:', d.fromUserId);
+            if (d.fromUserId === caregiverId) {
+              console.log('[Teleconsultation] Skipping own signal');
+              continue; // skip own
+            }
             
             const payload = JSON.parse(d.data);
 
             if (d.type === "answer") {
-              if (!pc.currentRemoteDescription) {
+              console.log('[Teleconsultation] Setting remote description from answer');
+              if (!pc.remoteDescription) {
                 await pc.setRemoteDescription(new RTCSessionDescription(payload));
+                console.log('[Teleconsultation] Remote description set');
               }
             } else if (d.type === "ice-candidate") {
+              console.log('[Teleconsultation] Adding ICE candidate');
               try {
                 await pc.addIceCandidate(new RTCIceCandidate(payload));
+                console.log('[Teleconsultation] ICE candidate added');
               } catch (e) {
-                console.error("Error adding ice candidate", e);
+                console.error("[Teleconsultation] Error adding ice candidate", e);
               }
             }
           }
@@ -194,24 +342,61 @@ export default function TeleconsultationScreen() {
       signalListenerRef.current = unsubSignals;
 
       // Step 6: Listen for status
+      console.log('[Teleconsultation] Step 6: Setting up session listener');
       const unsubSession = onSnapshot(
         doc(db, "consultation_sessions", currentSessionId),
         (docSnap) => {
           const s = docSnap.data();
+          console.log('[Teleconsultation] Session status update:', s?.status);
           if (s?.status === 'active' && callStatus !== 'connected') {
+            console.log('[Teleconsultation] Session active - starting call timer');
             setCallStatus('connected');
             startCallTimer();
           }
           if (s?.status === 'ended') {
+            console.log('[Teleconsultation] Session ended');
             handleCallEnded();
           }
         }
       );
       sessionListenerRef.current = unsubSession;
+      console.log('[Teleconsultation] startSession completed successfully');
 
     } catch (error: any) {
-      console.error('Error starting session:', error);
-      Alert.alert('Error', 'Failed to start consultation: ' + error.message);
+      console.error('[Teleconsultation] ERROR - Full error object:', error);
+      console.error('[Teleconsultation] ERROR - Message:', error?.message);
+      console.error('[Teleconsultation] ERROR - Code:', error?.code);
+      console.error('[Teleconsultation] ERROR - Stack:', error?.stack);
+
+      // Detect network errors
+      const isNetworkError = 
+        error?.code === 'NETWORK_ERROR' ||
+        error?.code === 'ERR_NETWORK' ||
+        error?.message?.includes('Network') ||
+        error?.message?.includes('network') ||
+        error?.message?.includes('Failed to fetch') ||
+        error?.message?.includes('timeout') ||
+        error?.message?.includes('offline') ||
+        error?.message?.includes('ECONNREFUSED') ||
+        error?.message?.includes('ENOTFOUND');
+
+      if (isNetworkError) {
+        console.error('[Teleconsultation] Network error detected');
+        Alert.alert(
+          'Network Error',
+          'Failed to start consultation: No internet connection. Please check your network and try again.',
+          [{ text: 'OK', onPress: () => {
+            setCallStatus('error');
+          }}]
+        );
+      } else {
+        Alert.alert(
+          'Error',
+          'Failed to start consultation: ' + (error?.message || 'Unknown error occurred')
+        );
+        setCallStatus('error');
+      }
+      
       setCallStatus('error');
     } finally {
       setLoadingSession(false);
@@ -299,10 +484,15 @@ export default function TeleconsultationScreen() {
   }, []);
 
   useEffect(() => {
+    console.log('[Teleconsultation] useEffect: Auth state check');
     const unsubAuth = onAuthStateChanged(auth, (user) => {
+      console.log('[Teleconsultation] Auth state changed, user:', user?.uid);
       if (user) {
+        console.log('[Teleconsultation] User authenticated, calling startSession');
         startSession();
         unsubAuth();
+      } else {
+        console.log('[Teleconsultation] User not authenticated');
       }
     });
     return () => unsubAuth();

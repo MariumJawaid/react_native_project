@@ -13,44 +13,37 @@ import {
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { rtdb, db, auth } from '../../../firebaseConfig';
+import { db, auth } from '../../../firebaseConfig';
 import { onAuthStateChanged } from 'firebase/auth';
-import { ref, get } from 'firebase/database';
 import { doc, getDoc } from 'firebase/firestore';
+import {
+  extractDeviceDataReadings,
+  aggregateByDate,
+  fetchPatientData,
+  fetchMRIScans,
+  fetchAIAnalyses,
+  fetchAssessmentResults,
+  fetchRAGRecommendations,
+  shortDateLabel,
+  getPastDateKeys,
+  DayAggregation,
+  PatientSummary,
+  MRIScan,
+  AIAnalysis,
+} from '../../../services/patientDataService';
+
 
 const { width } = Dimensions.get('window');
 const chartWidth = width - 80;
 
-// ─── Date utility helpers ───
-function getDateKey(date: Date): string {
-  // Returns "YYYY-MM-DD"
-  return date.toISOString().split('T')[0];
-}
-
-function getPastDates(days: number): string[] {
-  const dates: string[] = [];
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    dates.push(getDateKey(d));
-  }
-  return dates;
-}
-
-function shortDateLabel(dateKey: string): string {
-  const d = new Date(dateKey + 'T00:00:00');
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
 // ─── Types ───
-interface DayData {
-  day: string;        // Short label e.g. "Apr 12"
-  dateKey: string;    // "YYYY-MM-DD"
-  bpm: number;
-  falls: number;
-  outOfZone: number;
-  sleeping: number;   // percentage of readings where sleeping=true
-  readingCount: number;
+interface ChartPoint {
+  x: number;
+  y: number;
+}
+
+interface DayDataDisplay extends DayAggregation {
+  day: string; // Short label e.g. "Apr 12"
 }
 
 export default function PatientGraphs() {
@@ -58,19 +51,30 @@ export default function PatientGraphs() {
   const [selectedPeriod, setSelectedPeriod] = useState<7 | 14>(7);
   const [loading, setLoading] = useState(true);
   const [patientId, setPatientId] = useState<string | null>(null);
-  const [data, setData] = useState<DayData[]>([]);
+  
+  // Core data
+  const [chartData, setChartData] = useState<DayDataDisplay[]>([]);
+  const [patientData, setPatientData] = useState<PatientSummary | null>(null);
+  const [mriScans, setMriScans] = useState<MRIScan[]>([]);
+  const [aiAnalyses, setAiAnalyses] = useState<AIAnalysis[]>([]);
+  
+  // Summary metrics
   const [summaryBpm, setSummaryBpm] = useState(0);
   const [totalFalls, setTotalFalls] = useState(0);
-  const [totalZone, setTotalZone] = useState(0);
+  const [totalZoneExits, setTotalZoneExits] = useState(0);
+  const [avgSleepPercentage, setAvgSleepPercentage] = useState(0);
+  const [avgSleepHours, setAvgSleepHours] = useState(0);
+  const [avgSleepScore, setAvgSleepScore] = useState(0);
+  const [maxBpm, setMaxBpm] = useState(0);
+  const [minBpm, setMinBpm] = useState(0);
 
   const periods: { id: 7 | 14; label: string }[] = [
     { id: 7, label: '7 Days' },
     { id: 14, label: '14 Days' },
   ];
 
-  // ─── Resolve patientId — wait for auth before touching Firestore ───
+  // ─── Resolve patientId from current user ───
   useEffect(() => {
-    // ✅ onAuthStateChanged guarantees auth is restored before any Firestore call
     const unsubAuth = onAuthStateChanged(auth, async (user) => {
       if (!user) return;
       try {
@@ -86,104 +90,96 @@ export default function PatientGraphs() {
     return () => unsubAuth();
   }, []);
 
-  // ─── Fetch sensorData from patients/{patientId}/sensorData/{date}/{timestamp} ───
+  // ─── Fetch all data ───
   useEffect(() => {
     if (!patientId) return;
-    fetchGraphData();
+    fetchAllData();
   }, [patientId, selectedPeriod]);
 
-  const fetchGraphData = async () => {
+  const fetchAllData = async () => {
     if (!patientId) return;
     try {
       setLoading(true);
-      const dates = getPastDates(selectedPeriod);
-      const dayDataArray: DayData[] = [];
 
-      for (const dateKey of dates) {
-        // Path: patients/{patientId}/sensorData/{date}
-        const dayRef = ref(rtdb, `patients/${patientId}/sensorData/${dateKey}`);
-        const snapshot = await get(dayRef);
+      // Fetch patient summary
+      const patientSummary = await fetchPatientData(patientId);
+      setPatientData(patientSummary);
 
-        let bpmSum = 0;
-        let bpmCount = 0;
-        let fallCount = 0;
-        let zoneCount = 0;
-        let sleepCount = 0;
-        let readingCount = 0;
+      // Fetch sensor readings from deviceData
+      const readings = await extractDeviceDataReadings(patientId, selectedPeriod);
+      const aggregated = aggregateByDate(readings);
 
-        if (snapshot.exists()) {
-          const readings = snapshot.val();
-          // Each child is a timestamp key: patients/{patientId}/sensorData/{date}/{timestamp}
-          Object.values(readings).forEach((reading: any) => {
-            readingCount++;
-            if (typeof reading.bpm === 'number' || typeof reading.bpm === 'string') {
-              const bpmVal = parseFloat(String(reading.bpm));
-              if (!isNaN(bpmVal) && bpmVal > 0) {
-                bpmSum += bpmVal;
-                bpmCount++;
-              }
-            }
-            if (reading.fall === true) fallCount++;
-            if (reading.outOfZone === true) zoneCount++;
-            if (reading.sleeping === true) sleepCount++;
-          });
-        }
+      // Add display labels
+      const withLabels: DayDataDisplay[] = aggregated.map((day) => ({
+        ...day,
+        day: shortDateLabel(day.dateKey),
+      }));
 
-        dayDataArray.push({
-          day: shortDateLabel(dateKey),
-          dateKey,
-          bpm: bpmCount > 0 ? Math.round(bpmSum / bpmCount) : 0,
-          falls: fallCount,
-          outOfZone: zoneCount,
-          sleeping: readingCount > 0 ? Math.round((sleepCount / readingCount) * 100) : 0,
-          readingCount,
-        });
+      setChartData(withLabels);
+
+      // Compute summary statistics
+      if (withLabels.length > 0) {
+        const validBpms = withLabels
+          .map((d) => d.avgBpm)
+          .filter((b) => b > 0);
+        const avgBpm = validBpms.length > 0 
+          ? Math.round(validBpms.reduce((a, b) => a + b, 0) / validBpms.length)
+          : 0;
+        
+        const allMaxBpms = withLabels
+          .map((d) => d.maxBpm)
+          .filter((b) => b > 0);
+        const max = allMaxBpms.length > 0 ? Math.max(...allMaxBpms) : 0;
+        
+        const allMinBpms = withLabels
+          .map((d) => d.minBpm)
+          .filter((b) => b > 0);
+        const min = allMinBpms.length > 0 ? Math.min(...allMinBpms) : 0;
+
+        setSummaryBpm(avgBpm);
+        setMaxBpm(max);
+        setMinBpm(min);
+        setTotalFalls(withLabels.reduce((s, d) => s + d.fallCount, 0));
+        setTotalZoneExits(withLabels.reduce((s, d) => s + d.outOfZoneCount, 0));
+
+        const avgSleep = withLabels.reduce((s, d) => s + d.sleepPercentage, 0) / withLabels.length;
+        setAvgSleepPercentage(Math.round(avgSleep));
+
+        const avgSleep_Hours = withLabels.reduce((s, d) => s + d.sleepHours, 0) / withLabels.length;
+        setAvgSleepHours(Math.round(avgSleep_Hours * 10) / 10);
+
+        const avgScore = withLabels.reduce((s, d) => s + d.sleepScore, 0) / withLabels.length;
+        setAvgSleepScore(Math.round(avgScore));
       }
 
-      setData(dayDataArray);
+      // Fetch additional data
+      const mris = await fetchMRIScans(patientId);
+      setMriScans(mris);
 
-      // Compute summaries
-      const validBpm = dayDataArray.filter((d) => d.bpm > 0);
-      const avgBpm =
-        validBpm.length > 0
-          ? validBpm.reduce((s, d) => s + d.bpm, 0) / validBpm.length
-          : 0;
-      setSummaryBpm(Math.round(avgBpm));
-      setTotalFalls(dayDataArray.reduce((s, d) => s + d.falls, 0));
-      setTotalZone(dayDataArray.reduce((s, d) => s + d.outOfZone, 0));
+      const aiAnas = await fetchAIAnalyses(patientId);
+      setAiAnalyses(aiAnas);
     } catch (error) {
-      console.error('Error fetching sensorData:', error);
-      // On error, use flat placeholder data so charts render
-      const placeholder = getPastDates(selectedPeriod).map((dateKey) => ({
-        day: shortDateLabel(dateKey),
-        dateKey,
-        bpm: 0,
-        falls: 0,
-        outOfZone: 0,
-        sleeping: 0,
-        readingCount: 0,
-      }));
-      setData(placeholder);
+      console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  // ─── Simple line chart (pure RN View-based) ───
+  // ─── Simple line chart ───
   const SimpleLineChart = ({
     chartData,
-    dataKey,
+    dataKeyGetter,
     color,
     label,
     unit,
   }: {
-    chartData: DayData[];
-    dataKey: keyof DayData;
+    chartData: DayDataDisplay[];
+    dataKeyGetter: (d: DayDataDisplay) => number;
     color: string;
     label: string;
     unit: string;
   }) => {
-    const values = chartData.map((d) => Number(d[dataKey]) || 0);
+    const values = chartData.map(dataKeyGetter);
     const maxValue = Math.max(...values, 1);
     const minValue = Math.min(...values);
     const range = maxValue - minValue || 1;
@@ -191,7 +187,7 @@ export default function PatientGraphs() {
     const padding = 20;
     const pointAreaWidth = chartWidth - 50;
 
-    const points = values.map((v, i) => ({
+    const points: ChartPoint[] = values.map((v, i) => ({
       x: chartData.length > 1 ? (i / (chartData.length - 1)) * pointAreaWidth : pointAreaWidth / 2,
       y: chartHeight - padding - ((v - minValue) / range) * (chartHeight - 2 * padding),
     }));
@@ -208,9 +204,9 @@ export default function PatientGraphs() {
 
         <View style={styles.chartContainer}>
           <View style={styles.yAxis}>
-            <Text style={styles.axisLabel}>{maxValue}</Text>
+            <Text style={styles.axisLabel}>{Math.round(maxValue)}</Text>
             <Text style={styles.axisLabel}>{Math.round((maxValue + minValue) / 2)}</Text>
-            <Text style={styles.axisLabel}>{minValue}</Text>
+            <Text style={styles.axisLabel}>{Math.round(minValue)}</Text>
           </View>
           <View style={[styles.chartArea, { height: chartHeight }]}>
             {/* Grid lines */}
@@ -258,7 +254,7 @@ export default function PatientGraphs() {
               ))}
             </View>
 
-            {/* X-axis labels – show every N-th label to avoid crowding */}
+            {/* X-axis labels */}
             <View style={styles.xAxis}>
               {chartData.map((d, i) => {
                 const showLabel =
@@ -278,19 +274,20 @@ export default function PatientGraphs() {
     );
   };
 
-  // ─── Bar chart (falls / zone events) ───
+  // ─── Bar chart ───
   const SimpleBarChart = ({
     chartData,
-    dataKey,
+    dataKeyGetter,
     color,
     label,
   }: {
-    chartData: DayData[];
-    dataKey: keyof DayData;
+    chartData: DayDataDisplay[];
+    dataKeyGetter: (d: DayDataDisplay) => number;
     color: string;
     label: string;
   }) => {
-    const maxValue = Math.max(...chartData.map((d) => Number(d[dataKey]) || 0), 1);
+    const values = chartData.map(dataKeyGetter);
+    const maxValue = Math.max(...values, 1);
     const chartHeight = 160;
 
     return (
@@ -304,9 +301,10 @@ export default function PatientGraphs() {
         </View>
         <View style={styles.barChartContainer}>
           {chartData.map((point, index) => {
-            const val = Number(point[dataKey]) || 0;
+            const val = dataKeyGetter(point);
             const barHeight = (val / maxValue) * (chartHeight - 40);
-            const showLabel = chartData.length <= 7 || index === 0 || index === chartData.length - 1 || index % 3 === 0;
+            const showLabel =
+              chartData.length <= 7 || index === 0 || index === chartData.length - 1 || index % 3 === 0;
             return (
               <View key={index} style={styles.barWrapper}>
                 <View style={styles.barColumn}>
@@ -325,6 +323,47 @@ export default function PatientGraphs() {
     );
   };
 
+  // ─── Risk indicator badge ───
+  const RiskBadge = ({ level, score }: { level: string; score: number }) => {
+    const getColor = () => {
+      if (score >= 80) return '#ef4444';
+      if (score >= 50) return '#f59e0b';
+      return '#10b981';
+    };
+    
+    const getLabel = () => {
+      if (score >= 80) return 'High Risk';
+      if (score >= 50) return 'Medium Risk';
+      return 'Low Risk';
+    };
+
+    return (
+      <LinearGradient
+        colors={[getColor(), getColor() + '99']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.riskBadge}
+      >
+        <Ionicons name="alert-circle" size={18} color="#fff" />
+        <Text style={styles.riskBadgeText}>{getLabel()}</Text>
+        <Text style={styles.riskBadgeScore}>{score}</Text>
+      </LinearGradient>
+    );
+  };
+
+  // ─── Get sleep score label ───
+  const getSleepScoreLabel = (score: number) => {
+    if (score >= 85) return 'Good';
+    if (score >= 65) return 'Fair';
+    return 'Low';
+  };
+
+  const getSleepScoreColor = (score: number) => {
+    if (score >= 85) return '#10b981';
+    if (score >= 65) return '#f59e0b';
+    return '#ef4444';
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
@@ -339,7 +378,7 @@ export default function PatientGraphs() {
           <View style={{ width: 44 }} />
         </View>
 
-        {/* Period Selector — only 7d / 14d as specified */}
+        {/* Period Selector */}
         <View style={styles.periodSelector}>
           {periods.map((period) => (
             <TouchableOpacity
@@ -369,14 +408,16 @@ export default function PatientGraphs() {
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#3b82f6" />
             <Text style={styles.loadingText}>
-              Loading {selectedPeriod}-day data...{'\n'}
+              Loading patient data...{'\n'}
               <Text style={{ fontSize: 11, color: '#94a3b8' }}>
-                patients/{patientId || '...'}/sensorData
+                From Firestore collection
               </Text>
             </Text>
           </View>
         ) : (
           <>
+            
+
             {/* Summary Cards */}
             <View style={styles.summaryGrid}>
               <View style={styles.summaryCard}>
@@ -390,71 +431,125 @@ export default function PatientGraphs() {
                 <LinearGradient colors={['#ef4444', '#dc2626']} style={styles.summaryGradient}>
                   <Ionicons name="warning" size={24} color="#fff" />
                   <Text style={styles.summaryValue}>{totalFalls}</Text>
-                  <Text style={styles.summaryLabel}>Fall Events</Text>
+                  <Text style={styles.summaryLabel}>Falls</Text>
                 </LinearGradient>
               </View>
               <View style={styles.summaryCard}>
                 <LinearGradient colors={['#f59e0b', '#d97706']} style={styles.summaryGradient}>
                   <Ionicons name="location" size={24} color="#fff" />
-                  <Text style={styles.summaryValue}>{totalZone}</Text>
+                  <Text style={styles.summaryValue}>{totalZoneExits}</Text>
                   <Text style={styles.summaryLabel}>Zone Exits</Text>
                 </LinearGradient>
               </View>
             </View>
 
+            {/* HR stats row */}
+            {chartData.length > 0 && (
+              <View style={styles.statsRow}>
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>Max BPM</Text>
+                  <Text style={styles.statValue}>{maxBpm}</Text>
+                </View>
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>Min BPM</Text>
+                  <Text style={styles.statValue}>{minBpm}</Text>
+                </View>
+                <View style={styles.statBox}>
+                  <Text style={styles.statLabel}>Sleep Score</Text>
+                  <Text style={[styles.statValue, { color: getSleepScoreColor(avgSleepScore) }]}>
+                    {avgSleepScore} - {getSleepScoreLabel(avgSleepScore)}
+                  </Text>
+                </View>
+              </View>
+            )}
+
             {/* Heart Rate Chart */}
-            <View style={styles.card}>
-              <SimpleLineChart
-                chartData={data}
-                dataKey="bpm"
-                color="#3b82f6"
-                label="Heart Rate (BPM)"
-                unit="BPM"
-              />
-            </View>
+            {chartData.length > 0 && (
+              <View style={styles.card}>
+                <SimpleLineChart
+                  chartData={chartData}
+                  dataKeyGetter={(d) => d.avgBpm}
+                  color="#3b82f6"
+                  label="Heart Rate (BPM)"
+                  unit="Avg BPM"
+                />
+              </View>
+            )}
 
             {/* Fall Events Chart */}
-            <View style={styles.card}>
-              <SimpleBarChart
-                chartData={data}
-                dataKey="falls"
-                color="#ef4444"
-                label="Fall Events"
-              />
-            </View>
+            {chartData.length > 0 && (
+              <View style={styles.card}>
+                <SimpleBarChart
+                  chartData={chartData}
+                  dataKeyGetter={(d) => d.fallCount}
+                  color="#ef4444"
+                  label="Fall Events"
+                />
+              </View>
+            )}
 
             {/* Out of Zone Chart */}
-            <View style={styles.card}>
-              <SimpleBarChart
-                chartData={data}
-                dataKey="outOfZone"
-                color="#f59e0b"
-                label="Out of Zone Events"
-              />
-            </View>
+            {chartData.length > 0 && (
+              <View style={styles.card}>
+                <SimpleBarChart
+                  chartData={chartData}
+                  dataKeyGetter={(d) => d.outOfZoneCount}
+                  color="#f59e0b"
+                  label="Out of Zone Events"
+                />
+              </View>
+            )}
 
-            {/* Sleep Status Chart */}
-            <View style={styles.card}>
-              <SimpleLineChart
-                chartData={data}
-                dataKey="sleeping"
-                color="#7c3aed"
-                label="Sleep Activity (% readings)"
-                unit="%"
-              />
-            </View>
+            {/* Sleep Activity Chart */}
+            {chartData.length > 0 && (
+              <View style={styles.card}>
+                <SimpleLineChart
+                  chartData={chartData}
+                  dataKeyGetter={(d) => d.sleepHours}
+                  color="#7c3aed"
+                  label="Sleep Duration"
+                  unit="Hours"
+                />
+              </View>
+            )}
 
-            {/* Data source note */}
-            <View style={styles.infoCard}>
-              <Ionicons name="information-circle" size={24} color="#3b82f6" />
-              <Text style={styles.infoText}>
-                Data grouped by date from{' '}
-                <Text style={{ fontWeight: '700' }}>
-                  patients/{patientId}/sensorData/{'{date}'}/{'{timestamp}'}
-                </Text>{' '}
-                — showing last {selectedPeriod} days.
-              </Text>
-            </View>
+            {/* AI Analysis Section */}
+            {aiAnalyses.length > 0 && (
+              <View style={styles.card}>
+                <View style={styles.chartHeader}>
+                  <Text style={styles.chartTitle}>AI Analysis History</Text>
+                  <View style={styles.chartLegend}>
+                    <View style={[styles.legendDot, { backgroundColor: '#7c3aed' }]} />
+                    <Text style={styles.legendText}>{aiAnalyses.length} analyses</Text>
+                  </View>
+                </View>
+                {aiAnalyses.slice(0, 3).map((analysis, idx) => (
+                  <View key={idx} style={styles.analysisItem}>
+                    <View style={styles.analysisLeft}>
+                      <Text style={styles.analysisPrediction}>{analysis.prediction}</Text>
+                      <Text style={styles.analysisDate}>
+                        {analysis.timestamp?.toDate?.().toLocaleDateString()}
+                      </Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.confidenceBadge,
+                        { backgroundColor: analysis.confidence > 0.8 ? '#10b981' : '#f59e0b' },
+                      ]}
+                    >
+                      <Text style={styles.confidenceText}>
+                        {Math.round(analysis.confidence * 100)}%
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            
+          
+
+         
           </>
         )}
       </ScrollView>
@@ -465,27 +560,40 @@ export default function PatientGraphs() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f8fafc' },
   header: {
-    paddingTop: 20, paddingBottom: 24, paddingHorizontal: 20,
-    borderBottomLeftRadius: 30, borderBottomRightRadius: 30,
+    paddingTop: 20,
+    paddingBottom: 24,
+    paddingHorizontal: 20,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
   headerContent: {
-    flexDirection: 'row', alignItems: 'center',
-    justifyContent: 'space-between', marginBottom: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 20,
   },
   backBtn: {
-    width: 44, height: 44, borderRadius: 22,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center', alignItems: 'center',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   headerTitle: { fontSize: 22, fontWeight: '700', color: '#fff' },
   periodSelector: {
     flexDirection: 'row',
     backgroundColor: 'rgba(255,255,255,0.15)',
-    borderRadius: 12, padding: 4, gap: 4,
+    borderRadius: 12,
+    padding: 4,
+    gap: 4,
   },
   periodButton: {
-    flex: 1, paddingVertical: 10, paddingHorizontal: 12,
-    borderRadius: 8, alignItems: 'center',
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
   },
   periodButtonActive: { backgroundColor: '#fff' },
   periodButtonText: { fontSize: 14, fontWeight: '600', color: 'rgba(255,255,255,0.8)' },
@@ -493,73 +601,205 @@ const styles = StyleSheet.create({
   content: { flex: 1 },
   scrollContent: { padding: 20, paddingBottom: 40 },
   loadingContainer: {
-    flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 100,
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 100,
   },
   loadingText: { marginTop: 12, fontSize: 16, color: '#3b82f6', fontWeight: '500', textAlign: 'center' },
+  
+  // Patient header
+  patientHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  patientName: { fontSize: 20, fontWeight: '700', color: '#1e293b' },
+  patientSubtext: { fontSize: 13, color: '#64748b', marginTop: 4 },
+  patientStage: { fontSize: 12, color: '#7c3aed', fontWeight: '600', marginTop: 4 },
+  
+  riskBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    gap: 6,
+  },
+  riskBadgeText: { fontSize: 12, fontWeight: '600', color: '#fff' },
+  riskBadgeScore: { fontSize: 14, fontWeight: '700', color: '#fff' },
+
+  // Summary stats
   summaryGrid: { flexDirection: 'row', gap: 10, marginBottom: 20 },
   summaryCard: {
-    flex: 1, borderRadius: 16, overflow: 'hidden',
-    shadowColor: '#1e40af', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1, shadowRadius: 4, elevation: 3,
+    flex: 1,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#1e40af',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   summaryGradient: { padding: 14, alignItems: 'center' },
   summaryValue: { fontSize: 22, fontWeight: '700', color: '#fff', marginTop: 6 },
   summaryLabel: { fontSize: 11, color: 'rgba(255,255,255,0.85)', marginTop: 3 },
+  
+  statsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 20,
+  },
+  statBox: {
+    flex: 1,
+    backgroundColor: '#fff',
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+    shadowColor: '#1e40af',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  statLabel: { fontSize: 11, color: '#64748b', fontWeight: '500' },
+  statValue: { fontSize: 18, fontWeight: '700', color: '#1e40af', marginTop: 4 },
+
   card: {
-    backgroundColor: '#fff', borderRadius: 16, padding: 20, marginBottom: 16,
-    shadowColor: '#1e40af', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08, shadowRadius: 4, elevation: 2,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+    shadowColor: '#1e40af',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
   },
   chartWrapper: { width: '100%' },
   chartHeader: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', marginBottom: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
   },
   chartTitle: { fontSize: 16, fontWeight: '700', color: '#1e293b' },
   chartLegend: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 8, height: 8, borderRadius: 4 },
   legendText: { fontSize: 12, color: '#64748b', fontWeight: '500' },
+  
   chartContainer: { flexDirection: 'row' },
   yAxis: { width: 36, justifyContent: 'space-between', paddingVertical: 10 },
   axisLabel: { fontSize: 10, color: '#64748b', fontWeight: '500' },
   chartArea: { flex: 1, position: 'relative' },
   gridLines: {
-    position: 'absolute', left: 0, right: 0, top: 20, bottom: 40,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 20,
+    bottom: 40,
     justifyContent: 'space-between',
   },
   gridLine: { height: 1, backgroundColor: '#e2e8f0' },
   linePath: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 40 },
   dataPoint: {
-    position: 'absolute', width: 10, height: 10, borderRadius: 5,
-    borderWidth: 2, borderColor: '#fff',
-    shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.3, shadowRadius: 4, elevation: 4,
-    marginLeft: -5, marginTop: -5,
+    position: 'absolute',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: '#fff',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 4,
+    marginLeft: -5,
+    marginTop: -5,
   },
   lineSegment: {
-    position: 'absolute', height: 2.5,
+    position: 'absolute',
+    height: 2.5,
     transformOrigin: 'left center',
   },
   xAxis: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    flexDirection: 'row', justifyContent: 'space-between', paddingTop: 8,
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingTop: 8,
   },
   xAxisLabel: { fontSize: 10, color: '#64748b', fontWeight: '500' },
+  
   barChartContainer: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'flex-end', height: 180, paddingTop: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    height: 180,
+    paddingTop: 20,
   },
   barWrapper: { flex: 1, alignItems: 'center', justifyContent: 'flex-end' },
   barColumn: { width: '100%', alignItems: 'center', justifyContent: 'flex-end', height: 140 },
   bar: {
-    width: '65%', borderTopLeftRadius: 6, borderTopRightRadius: 6,
-    justifyContent: 'flex-start', alignItems: 'center', minHeight: 2, paddingTop: 4,
+    width: '65%',
+    borderTopLeftRadius: 6,
+    borderTopRightRadius: 6,
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    minHeight: 2,
+    paddingTop: 4,
   },
   barValue: { fontSize: 10, fontWeight: '700', color: '#fff' },
   barLabel: { fontSize: 10, color: '#64748b', fontWeight: '500', marginTop: 6 },
+  
+  // Analysis items
+  analysisItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  analysisLeft: { flex: 1 },
+  analysisPrediction: { fontSize: 14, fontWeight: '600', color: '#1e293b' },
+  analysisDate: { fontSize: 12, color: '#94a3b8', marginTop: 4 },
+  
+  confidenceBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  confidenceText: { fontSize: 12, fontWeight: '700', color: '#fff' },
+  
+  // MRI items
+  mriItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  mriLeft: { flex: 1, flexDirection: 'row', gap: 12, alignItems: 'center' },
+  mriName: { fontSize: 14, fontWeight: '600', color: '#1e293b' },
+  mriStatus: { fontSize: 11, color: '#7c3aed', fontWeight: '500', marginTop: 2 },
+  mriDate: { fontSize: 11, color: '#94a3b8', marginTop: 2 },
+  mriStats: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#dbeafe', borderRadius: 6 },
+  mriStatText: { fontSize: 11, fontWeight: '600', color: '#1e40af' },
+  
   infoCard: {
-    flexDirection: 'row', alignItems: 'flex-start',
-    backgroundColor: '#dbeafe', padding: 14,
-    borderRadius: 12, gap: 12, marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#dbeafe',
+    padding: 14,
+    borderRadius: 12,
+    gap: 12,
+    marginTop: 8,
   },
   infoText: { flex: 1, fontSize: 13, color: '#1e40af', lineHeight: 19 },
 });

@@ -108,14 +108,7 @@ export default function MapScreen() {
           </View>
         )}
         
-        {/* Current Values Display */}
-        <View style={styles.debugCard}>
-          <Text style={styles.debugTitle}>Current Values:</Text>
-          <Text style={styles.debugText}>Latitude: {latitude}</Text>
-          <Text style={styles.debugText}>Longitude: {longitude}</Text>
-          <Text style={styles.debugText}>DB Path: patients/latest</Text>
-          <Text style={styles.debugText}>Data Fetched: {dataFetched ? 'Yes' : 'No'}</Text>
-        </View>
+        
 
         {isLoading ? (
           <View style={styles.loadingContainer}>

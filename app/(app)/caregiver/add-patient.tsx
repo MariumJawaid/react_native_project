@@ -158,7 +158,7 @@ export default function AddPatientScreen() {
               </View>
             </View>
 
-            {/* Gender Selection */}
+            {/* Gender Selection
             <View style={styles.inputContainer}>
               <Text style={styles.label}>Gender</Text>
               <View style={styles.genderContainer}>
@@ -166,7 +166,7 @@ export default function AddPatientScreen() {
                 <GenderButton value="female" label="Female" icon="female" />
                 <GenderButton value="other" label="Other" icon="transgender" />
               </View>
-            </View>
+            </View> */}
 
             {/* Location Input */}
             <View style={styles.inputContainer}>

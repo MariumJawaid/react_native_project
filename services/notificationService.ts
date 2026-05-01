@@ -1,5 +1,4 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Alert } from 'react-native';
 
 export interface Notification {
   id: string;
@@ -48,15 +47,7 @@ export const notificationService = {
       notifications.unshift(newNotification); // Add to beginning
       await AsyncStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(notifications));
       
-      // Show alert for important notifications
-      if (type === 'fall') {
-        Alert.alert(
-          '🚨 FALL DETECTED',
-          message,
-          [{ text: 'OK', onPress: () => {} }],
-          { cancelable: false }
-        );
-      }
+      console.log('✅ Notification stored:', { type, title, id: newNotification.id });
       
       return newNotification;
     } catch (error) {

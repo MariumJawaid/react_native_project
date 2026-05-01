@@ -9,7 +9,6 @@ import {
   Dimensions,
   StatusBar,
   Alert,
-  Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,81 +20,6 @@ import { doc, getDoc } from 'firebase/firestore';
 import { notificationService } from '../../../services/notificationService';
 
 const { width } = Dimensions.get('window');
-
-// ─── Alert banner component shown for fall/outOfZone events ───
-function AlertBanner({
-  visible,
-  type,
-  patientName,
-  onDismiss,
-}: {
-  visible: boolean;
-  type: 'fall' | 'zone' | null;
-  patientName: string;
-  onDismiss: () => void;
-}) {
-  if (!visible || !type) return null;
-  const isFall = type === 'fall';
-  return (
-    <Modal transparent animationType="fade" visible={visible} onRequestClose={onDismiss}>
-      <View style={alertStyles.overlay}>
-        <View style={[alertStyles.banner, isFall ? alertStyles.bannerFall : alertStyles.bannerZone]}>
-          <View style={alertStyles.iconCircle}>
-            <Ionicons name={isFall ? 'warning' : 'location'} size={36} color="#fff" />
-          </View>
-          <Text style={alertStyles.title}>
-            {isFall ? '⚠️ Fall Detected' : '⚠️ Outside Safe Zone'}
-          </Text>
-          <Text style={alertStyles.message}>
-            {isFall
-              ? `${patientName || 'Patient'} has experienced a fall. Please check on them immediately.`
-              : `${patientName || 'Patient'} has moved outside the safe geofence zone.`}
-          </Text>
-          <TouchableOpacity style={alertStyles.dismissBtn} onPress={onDismiss} activeOpacity={0.8}>
-            <Text style={alertStyles.dismissText}>Acknowledge</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </Modal>
-  );
-}
-
-const alertStyles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 24,
-  },
-  banner: {
-    borderRadius: 24,
-    padding: 28,
-    alignItems: 'center',
-    width: '100%',
-    maxWidth: 360,
-  },
-  bannerFall: { backgroundColor: '#dc2626' },
-  bannerZone: { backgroundColor: '#d97706' },
-  iconCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  title: { fontSize: 22, fontWeight: '800', color: '#fff', marginBottom: 12, textAlign: 'center' },
-  message: { fontSize: 15, color: 'rgba(255,255,255,0.9)', textAlign: 'center', lineHeight: 22, marginBottom: 24 },
-  dismissBtn: {
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    borderRadius: 14,
-    paddingVertical: 12,
-    paddingHorizontal: 32,
-  },
-  dismissText: { fontSize: 16, fontWeight: '700', color: '#fff' },
-});
 
 export default function RealtimeMonitoring() {
   const router = useRouter();
@@ -119,17 +43,12 @@ export default function RealtimeMonitoring() {
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [loading, setLoading] = useState(true);
 
-  // Alert state
-  const [alertVisible, setAlertVisible] = useState(false);
-  const [alertType, setAlertType] = useState<'fall' | 'zone' | null>(null);
-
   // Track previous states to detect transitions (false→true)
   const previousFallRef = useRef(false);
   const previousZoneRef = useRef(false);
 
-  // ─── Step 1: Resolve patientId — wait for auth before touching Firestore ───
+  // ─── Step 1: Resolve patient name from Firestore (optional, for display) ───
   useEffect(() => {
-    // ✅ onAuthStateChanged guarantees auth is restored before any Firestore call
     const unsubAuth = onAuthStateChanged(auth, async (user) => {
       if (!user) return;
       try {
@@ -146,27 +65,25 @@ export default function RealtimeMonitoring() {
           }
         }
       } catch (err) {
-        console.error('Error resolving patient:', err);
+        console.error('Error resolving patient name:', err);
       }
     });
     return () => unsubAuth();
   }, []);
 
-  // ─── Step 2: Subscribe to patients/{patientId}/current in Realtime DB ───
+  // ─── Step 2: Subscribe to patients/latest in Realtime DB ───
   useEffect(() => {
-    if (!patientId) return;
-
     setLoading(true);
-    // Path as specified: patients/{patientId}/current
-    const currentRef = ref(rtdb, `patients/${patientId}/current`);
-    console.log(`📡 Subscribing to: patients/${patientId}/current`);
+    // Path: patients/latest
+    const latestRef = ref(rtdb, 'patients/latest');
+    console.log('📡 Subscribing to: patients/latest');
 
     const unsubscribe = onValue(
-      currentRef,
+      latestRef,
       (snapshot) => {
         if (snapshot.exists()) {
           const data = snapshot.val();
-          console.log('✅ Realtime data:', data);
+          console.log('✅ Realtime data from patients/latest:', data);
 
           const processed = {
             bpm: data.bpm ? String(data.bpm).substring(0, 6) : '0',
@@ -182,7 +99,7 @@ export default function RealtimeMonitoring() {
           setVitals(processed);
           setLastUpdate(new Date());
         } else {
-          console.warn(`⚠️ No data at patients/${patientId}/current`);
+          console.warn('⚠️ No data at patients/latest');
         }
         setLoading(false);
       },
@@ -193,26 +110,30 @@ export default function RealtimeMonitoring() {
     );
 
     return () => {
-      off(currentRef, 'value', unsubscribe);
+      off(latestRef, 'value', unsubscribe);
     };
-  }, [patientId]);
+  }, []);
 
   // ─── Step 3: Feature 6 – Detect fall and outOfZone transitions → alert + notification ───
   useEffect(() => {
     // FALL DETECTED: false → true transition
     if (vitals.fall && !previousFallRef.current) {
-      console.log('🚨 FALL DETECTED');
-      // In-app alert
-      setAlertType('fall');
-      setAlertVisible(true);
+      console.log('🚨 FALL DETECTED - Creating notification');
+      console.log('Fall value:', vitals.fall);
+      console.log('Previous fall ref:', previousFallRef.current);
       // Persist notification (also shows Alert.alert for fall type in notificationService)
       notificationService.addNotification(
         'fall',
         `⚠️ Fall Detected for ${patientName}`,
         `A fall was detected at ${new Date().toLocaleTimeString()}. Location: ${vitals.latitude}, ${vitals.longitude}`
-      );
+      ).then(() => {
+        console.log('✅ Fall notification created successfully');
+      }).catch((err) => {
+        console.error('❌ Error creating fall notification:', err);
+      });
       previousFallRef.current = true;
     } else if (!vitals.fall && previousFallRef.current) {
+      console.log('Fall reset - going back to false');
       previousFallRef.current = false;
     }
   }, [vitals.fall, patientName]);
@@ -221,8 +142,6 @@ export default function RealtimeMonitoring() {
     // OUT OF ZONE: false → true transition
     if (vitals.outOfZone && !previousZoneRef.current) {
       console.log('🚨 OUT OF ZONE DETECTED');
-      setAlertType('zone');
-      setAlertVisible(true);
       notificationService.addNotification(
         'zone',
         `⚠️ ${patientName} Outside Safe Zone`,
@@ -246,14 +165,6 @@ export default function RealtimeMonitoring() {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
-
-      {/* Fall / Zone Alert Modal */}
-      <AlertBanner
-        visible={alertVisible}
-        type={alertType}
-        patientName={patientName}
-        onDismiss={() => setAlertVisible(false)}
-      />
 
       {/* Header */}
       <LinearGradient colors={['#1e40af', '#1e3a8a']} style={styles.header}>
@@ -289,7 +200,7 @@ export default function RealtimeMonitoring() {
       >
         {/* Last Update */}
         <Text style={styles.lastUpdate}>
-          Last updated: {lastUpdate.toLocaleTimeString()} • patients/{patientId || '...'}/current
+          Last updated: {lastUpdate.toLocaleTimeString()} • patients/latest
         </Text>
 
         {/* Heart Rate - Primary Card */}
@@ -361,6 +272,8 @@ export default function RealtimeMonitoring() {
             </Text>
           </View>
         </View>
+
+  
 
         {/* Motion Sensors */}
         <Text style={styles.sectionTitle}>Motion Sensors</Text>
@@ -559,5 +472,26 @@ const styles = StyleSheet.create({
     width: 44, height: 44, borderRadius: 12,
     backgroundColor: '#3b82f6',
     justifyContent: 'center', alignItems: 'center',
+  },
+  debugCard: {
+    backgroundColor: '#fef3c7',
+    borderRadius: 12,
+    padding: 16,
+    marginVertical: 16,
+    marginHorizontal: 16,
+    borderLeftWidth: 4,
+    borderLeftColor: '#f59e0b',
+  },
+  debugTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#92400e',
+    marginBottom: 8,
+  },
+  debugText: {
+    fontSize: 12,
+    color: '#78350f',
+    marginVertical: 2,
+    fontFamily: 'monospace',
   },
 });

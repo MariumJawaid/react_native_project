@@ -14,7 +14,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { db } from '../../../firebaseConfig';
+import { db, auth } from '../../../firebaseConfig';
 import { doc, updateDoc } from 'firebase/firestore';
 import { notificationService, Notification } from '../../../services/notificationService';
 
@@ -149,21 +149,33 @@ export default function NotificationsScreen() {
             text: 'OK', 
             onPress: async () => {
               try {
-                // Permanently link the clinician to the patient in the DB
+                const caregiverId = auth.currentUser?.uid;
+                
+                // Save clinician info to user document
+                if (caregiverId && item.data.clinicianId) {
+                  await updateDoc(doc(db, 'users', caregiverId), {
+                    linkedClinicianId: item.data.clinicianId,
+                    linkedClinicianName: item.data.clinicianName || 'Clinician',
+                    linkedClinicianEmail: item.data.clinicianEmail || '',
+                    linkedClinicianPhone: item.data.clinicianPhone || '',
+                    clinicianLinkedAt: new Date(),
+                  });
+                }
+                
+                // Also save to patient collection for reference
                 if (item.data.patientId && item.data.clinicianId) {
                   await updateDoc(doc(db, 'patients', item.data.patientId), {
                     clinicianId: item.data.clinicianId 
                   });
                 }
               } catch (err) {
-                console.error("Failed to link clinician to patient", err);
+                console.error("Failed to link clinician", err);
+                Alert.alert('Error', 'Failed to save clinician information');
               }
 
               router.push({
                 pathname: '/(app)/caregiver/contact-clinician' as any,
                 params: {
-                  clinicianId: item.data.clinicianId,
-                  clinicianName: item.data.clinicianName,
                   patientId: item.data.patientId,
                 }
               });

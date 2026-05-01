@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -26,6 +26,9 @@ export default function CaregiverDashboard() {
   const [patientId, setPatientId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [unreadCount, setUnreadCount] = useState(0);
+  
+  // Track which consultation requests we've already notified about
+  const notifiedConsultationsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     loadDashboardData();
@@ -53,7 +56,14 @@ export default function CaregiverDashboard() {
     const unsubscribe = onSnapshot(q, (snapshot) => {
       snapshot.docChanges().forEach(async (change) => {
         if (change.type === 'modified' || change.type === 'added') {
+          const docId = change.doc.id;
           const data = change.doc.data();
+          
+          // Check if we've already sent a notification for this consultation
+          if (notifiedConsultationsRef.current.has(docId)) {
+            console.log('[Dashboard] Notification already sent for consultation:', docId);
+            return; // Skip if we've already notified
+          }
           
           let clinicianName = 'Clinician';
           try {
@@ -66,6 +76,10 @@ export default function CaregiverDashboard() {
             console.error('Error fetching clinician name:', e);
           }
 
+          console.log('[Dashboard] Sending new notification for consultation:', docId);
+          // Mark this consultation as notified
+          notifiedConsultationsRef.current.add(docId);
+          
           // Persist the notification for consultation accepted
           notificationService.addNotification(
             'consult_accepted',
@@ -75,13 +89,18 @@ export default function CaregiverDashboard() {
               clinicianId: data.clinicianId,
               clinicianName,
               patientId: data.patientId,
+              consultRequestId: docId,
             }
           );
         }
       });
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      // Clear tracking when component unmounts
+      notifiedConsultationsRef.current.clear();
+    };
   }, [auth.currentUser?.uid]);
 
   const loadUnreadCount = async () => {
@@ -151,6 +170,14 @@ export default function CaregiverDashboard() {
   const secondaryActions = [
     {
       id: 3,
+      title: 'Patient Report',
+      subtitle: 'Cognitive scores & analysis',
+      icon: 'document-text',
+      colors: ['#ec4899', '#db2777'],
+      onPress: () => router.push('/(app)/caregiver/patient-reports' as any),
+    },
+    {
+      id: 4,
       title: 'Browse Doctors',
       subtitle: 'Find & consult specialists',
       icon: 'medical',
@@ -158,7 +185,7 @@ export default function CaregiverDashboard() {
       onPress: () => router.push('/(app)/caregiver/browse-doctors' as any),
     },
     {
-      id: 4,
+      id: 5,
       title: 'Patient Analytics',
       subtitle: '7 & 14 day trends',
       icon: 'bar-chart',
@@ -166,7 +193,7 @@ export default function CaregiverDashboard() {
       onPress: () => router.push('/(app)/caregiver/patient-graphs' as any),
     },
     {
-      id: 5,
+      id: 6,
       title: 'Live Monitoring',
       subtitle: 'Real-time vitals & alerts',
       icon: 'pulse',
@@ -174,7 +201,7 @@ export default function CaregiverDashboard() {
       onPress: () => router.push('/(app)/caregiver/realtime-monitoring' as any),
     },
     {
-      id: 6,
+      id: 7,
       title: 'Lifestyle Tips',
       subtitle: 'Alzheimer\'s care guide',
       icon: 'heart',
@@ -182,7 +209,7 @@ export default function CaregiverDashboard() {
       onPress: () => router.push('/(app)/caregiver/lifestyle-recommendations' as any),
     },
     {
-      id: 7,
+      id: 8,
       title: 'Contact Clinician',
       subtitle: 'Reach out to clinician',
       icon: 'chatbubbles',

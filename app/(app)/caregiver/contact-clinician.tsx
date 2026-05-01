@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -7,18 +7,53 @@ import {
   TouchableOpacity,
   StatusBar,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { db, auth } from '../../../firebaseConfig';
+import { doc, getDoc } from 'firebase/firestore';
 
 export default function ContactClinicianScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   
-  const clinicianId = params.clinicianId as string | undefined;
-  const clinicianName = params.clinicianName as string | undefined;
   const patientId = params.patientId as string | undefined;
+  
+  const [clinicianId, setClinicianId] = useState<string | undefined>(undefined);
+  const [clinicianName, setClinicianName] = useState<string | undefined>(undefined);
+  const [clinicianEmail, setClinicianEmail] = useState<string | undefined>(undefined);
+  const [clinicianPhone, setClinicianPhone] = useState<string | undefined>(undefined);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch clinician info from caregiver collection
+  useEffect(() => {
+    const fetchCaregiverClinicianInfo = async () => {
+      try {
+        const caregiverId = auth.currentUser?.uid;
+        if (!caregiverId) {
+          setLoading(false);
+          return;
+        }
+
+        const caregiverDoc = await getDoc(doc(db, 'users', caregiverId));
+        if (caregiverDoc.exists()) {
+          const data = caregiverDoc.data();
+          setClinicianId(data.linkedClinicianId);
+          setClinicianName(data.linkedClinicianName);
+          setClinicianEmail(data.linkedClinicianEmail);
+          setClinicianPhone(data.linkedClinicianPhone);
+        }
+      } catch (error) {
+        console.error('Error fetching caregiver clinician info:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchCaregiverClinicianInfo();
+  }, []);
 
   const options = [
     {
@@ -46,23 +81,19 @@ export default function ContactClinicianScreen() {
         });
       },
     },
-    {
-      id: 'chat',
-      title: 'Message Clinician',
-      subtitle: 'Send a text message (Coming Soon)',
-      icon: 'chatbubble-ellipses',
-      color: '#3b82f6',
-      onPress: () => {},
-    },
-    {
-      id: 'call',
-      title: 'Voice Call',
-      subtitle: 'Start an audio-only call (Coming Soon)',
-      icon: 'call',
-      color: '#8b5cf6',
-      onPress: () => {},
-    },
+    
   ];
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#3b82f6" />
+          <Text style={styles.loadingText}>Loading clinician information...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -79,6 +110,20 @@ export default function ContactClinicianScreen() {
       </LinearGradient>
 
       <View style={styles.content}>
+        {/* Clinician Info Card */}
+        {clinicianName && (
+          <View style={styles.clinicianCard}>
+            <View style={styles.clinicianAvatar}>
+              <Ionicons name="person-circle" size={48} color="#3b82f6" />
+            </View>
+            <View style={styles.clinicianInfo}>
+              <Text style={styles.clinicianName}>Dr. {clinicianName}</Text>
+              {clinicianEmail && <Text style={styles.clinicianDetail}>{clinicianEmail}</Text>}
+              {clinicianPhone && <Text style={styles.clinicianDetail}>{clinicianPhone}</Text>}
+            </View>
+          </View>
+        )}
+
         <Text style={styles.instructions}>
           How would you like to contact {clinicianName ? `Dr. ${clinicianName}` : 'the clinician'}?
         </Text>
@@ -111,6 +156,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8fafc',
   },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: '#64748b',
+  },
   header: {
     paddingTop: 20,
     paddingBottom: 20,
@@ -139,6 +194,33 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: 24,
+  },
+  clinicianCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#e0e7ff',
+    padding: 16,
+    borderRadius: 16,
+    marginBottom: 24,
+    borderLeftWidth: 4,
+    borderLeftColor: '#3b82f6',
+  },
+  clinicianAvatar: {
+    marginRight: 16,
+  },
+  clinicianInfo: {
+    flex: 1,
+  },
+  clinicianName: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1e293b',
+    marginBottom: 4,
+  },
+  clinicianDetail: {
+    fontSize: 13,
+    color: '#475569',
+    marginBottom: 2,
   },
   instructions: {
     fontSize: 16,
