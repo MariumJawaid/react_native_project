@@ -11,6 +11,8 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { auth, db } from '../../../firebaseConfig';
@@ -172,10 +174,16 @@ export default function BrowseCliniciansScreen() {
           </View>
 
           {selectedClinician && (
+            <KeyboardAvoidingView
+              style={{ flex: 1 }}
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+            >
             <ScrollView 
               style={styles.modalContent}
               contentContainerStyle={styles.modalScrollContent}
               showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
             >
               <View style={styles.detailSection}>
                 <Text style={styles.detailLabel}>Name:</Text>
@@ -256,6 +264,7 @@ export default function BrowseCliniciansScreen() {
                 </LinearGradient>
               </TouchableOpacity>
             </ScrollView>
+            </KeyboardAvoidingView>
           )}
         </SafeAreaView>
       </Modal>

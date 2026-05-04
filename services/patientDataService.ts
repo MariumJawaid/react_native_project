@@ -8,6 +8,7 @@ import {
   where,
   orderBy,
   limit,
+  Timestamp,
 } from 'firebase/firestore';
 
 // ─── Types ───
@@ -99,67 +100,142 @@ export async function fetchPatientData(patientId: string): Promise<PatientSummar
   }
 }
 
-// ─── Extract sensor data from deviceData map ───
+// ─── Fetch sensor readings from patient_logs collection (primary source) ───
+// Schema per document:
+//   bpm: number, fall: boolean, outOfZone: boolean, outOfBound: number,
+//   sleeping: boolean, latitude: number, longitude: number, pitch: number,
+//   roll: number, patientId: string, timestamp: string ("YYYY-MM-DD HH:MM:SS"),
+//   timestampMs: number (epoch ms)
 export async function extractDeviceDataReadings(
   patientId: string,
   days: number
 ): Promise<SensorReading[]> {
+  const cutoffTime = Date.now() - days * 24 * 60 * 60 * 1000;
+
+  // ── Primary: patient_logs collection ──
+  // Single where() on timestampMs alone = uses Firestore's auto-created
+  // single-field index. No composite index needed. Filters server-side
+  // so only the N days of docs are downloaded (not all 2790+).
+  try {
+    const logsRef = collection(db, 'patient_logs');
+    const q = query(
+      logsRef,
+      where('timestampMs', '>=', cutoffTime),
+      orderBy('timestampMs', 'asc')
+    );
+    const snapshot = await getDocs(q);
+
+    console.log('[patientDataService] patient_logs docs in window:', snapshot.size);
+
+    if (!snapshot.empty) {
+      const readings: SensorReading[] = snapshot.docs.map((docSnap) => {
+        const d = docSnap.data();
+        const tsMs: number = d.timestampMs ?? 0;
+
+        // Extract dateKey from timestamp string "YYYY-MM-DD HH:MM:SS"
+        const dateKey: string =
+          typeof d.timestamp === 'string' && d.timestamp.length >= 10
+            ? d.timestamp.substring(0, 10)
+            : getDateKeyFromTimestamp(tsMs);
+
+        return {
+          timestamp: tsMs,
+          bpm: d.bpm ?? 0,
+          latitude: d.latitude ?? 0,
+          longitude: d.longitude ?? 0,
+          fall: d.fall === true,
+          outOfZone: d.outOfZone === true,
+          outOfBound: d.outOfBound ?? 0,
+          sleeping: d.sleeping === true,
+          pitch: d.pitch ?? 0,
+          roll: d.roll ?? 0,
+          dateKey,
+        };
+      });
+
+      console.log('[patientDataService] readings mapped:', readings.length);
+      return readings;
+    }
+  } catch (logsErr) {
+    console.warn('[patientDataService] patient_logs query failed, falling back to deviceData:', logsErr);
+  }
+
+  // ── Fallback: legacy deviceData map on patient document ──
+  console.warn('[patientDataService] patient_logs empty — falling back to deviceData map');
   try {
     const patientRef = doc(db, 'patients', patientId);
     const patientSnap = await getDoc(patientRef);
-
     if (!patientSnap.exists()) return [];
 
     const data = patientSnap.data();
     const deviceData = data.deviceData as Record<string, any>;
-
-    if (!deviceData || typeof deviceData !== 'object') {
-      return [];
-    }
+    if (!deviceData || typeof deviceData !== 'object') return [];
 
     const readings: SensorReading[] = [];
-    const cutoffTime = Date.now() - days * 24 * 60 * 60 * 1000;
-
     Object.entries(deviceData).forEach(([timestampStr, reading]) => {
-      const timestamp = parseInt(timestampStr);
-      if (timestamp < cutoffTime) return;
-
+      const rawTs = parseInt(timestampStr);
+      const tsMs = rawTs < 1e12 ? rawTs * 1000 : rawTs; // normalize s → ms
+      if (tsMs < cutoffTime) return;
       readings.push({
-        timestamp,
-        bpm: reading.bpm || 0,
-        latitude: reading.latitude || 0,
-        longitude: reading.longitude || 0,
+        timestamp: tsMs,
+        bpm: reading.bpm ?? 0,
+        latitude: reading.latitude ?? 0,
+        longitude: reading.longitude ?? 0,
         fall: reading.fall === true,
         outOfZone: reading.outOfZone === true,
-        outOfBound: reading.outOfBound || 0,
+        outOfBound: reading.outOfBound ?? 0,
         sleeping: reading.sleeping === true,
-        pitch: reading.pitch || 0,
-        roll: reading.roll || 0,
-        dateKey: reading.dateKey || getDateKeyFromTimestamp(timestamp),
+        pitch: reading.pitch ?? 0,
+        roll: reading.roll ?? 0,
+        dateKey: reading.dateKey || getDateKeyFromTimestamp(tsMs),
       });
     });
-
+    console.log('[patientDataService] readings from deviceData fallback:', readings.length);
     return readings.sort((a, b) => a.timestamp - b.timestamp);
-  } catch (error) {
-    console.error('Error extracting device data:', error);
+  } catch (fallbackErr) {
+    console.error('[patientDataService] deviceData fallback also failed:', fallbackErr);
     return [];
   }
 }
 
 // ─── Aggregate readings by date ───
-export function aggregateByDate(readings: SensorReading[]): DayAggregation[] {
+// `days` is required so we always scaffold the full date window (including empty days)
+export function aggregateByDate(readings: SensorReading[], days: number = 7): DayAggregation[] {
+  // Build a map of all days in the window, seeded with empty data
+  const allDateKeys = getPastDateKeys(days);
   const groupedByDate: Record<string, SensorReading[]> = {};
+  allDateKeys.forEach((dk) => { groupedByDate[dk] = []; });
 
+  // Bucket each reading into its day
   readings.forEach((reading) => {
     const dateKey = reading.dateKey;
-    if (!groupedByDate[dateKey]) {
-      groupedByDate[dateKey] = [];
+    if (groupedByDate[dateKey] !== undefined) {
+      groupedByDate[dateKey].push(reading);
+    } else {
+      // Reading exists but is outside the window scaffold — include it anyway
+      groupedByDate[dateKey] = [reading];
     }
-    groupedByDate[dateKey].push(reading);
   });
 
   return Object.entries(groupedByDate)
     .map(([dateKey, dayReadings]) => {
+      if (dayReadings.length === 0) {
+        // Empty day — return zeroed aggregation
+        return {
+          dateKey,
+          readings: [],
+          avgBpm: 0,
+          maxBpm: 0,
+          minBpm: 0,
+          fallCount: 0,
+          outOfZoneCount: 0,
+          sleepPercentage: 0,
+          sleepHours: 0,
+          sleepScore: 0,
+          readingCount: 0,
+        };
+      }
+
       // Sort readings by timestamp
       const sortedReadings = dayReadings.sort((a, b) => a.timestamp - b.timestamp);
 
@@ -170,40 +246,31 @@ export function aggregateByDate(readings: SensorReading[]): DayAggregation[] {
 
       // Calculate sleep hours: for each sleeping reading, measure time to next reading (capped at 4 hours)
       let totalSleepMs = 0;
-      const sleepReadings = sortedReadings.filter((r) => r.sleeping);
 
       for (let i = 0; i < sortedReadings.length; i++) {
         const reading = sortedReadings[i];
         if (reading.sleeping) {
-          // Find the next reading on the same day
           let nextReadingTime: number;
-          
+
           if (i < sortedReadings.length - 1) {
-            // Next reading exists
             nextReadingTime = sortedReadings[i + 1].timestamp;
           } else {
-            // No next reading: count until end of day
-            // Parse dateKey (format: "YYYY-MM-DD")
             const nextDay = new Date(dateKey);
             nextDay.setDate(nextDay.getDate() + 1);
             nextReadingTime = nextDay.getTime();
           }
 
           let sleepDurationMs = nextReadingTime - reading.timestamp;
-          
-          // Cap at 4 hours (14400000 ms)
           const MAX_SLEEP_INTERVAL = 4 * 60 * 60 * 1000;
           sleepDurationMs = Math.min(sleepDurationMs, MAX_SLEEP_INTERVAL);
-
           totalSleepMs += sleepDurationMs;
         }
       }
 
-      const sleepHours = Math.round((totalSleepMs / (1000 * 60 * 60)) * 10) / 10; // Round to 1 decimal
+      const sleepHours = Math.round((totalSleepMs / (1000 * 60 * 60)) * 10) / 10;
 
-      // Calculate sleep score (ideal: 7.5 hours)
       let sleepScore = 100 - Math.abs(sleepHours - 7.5) * 18;
-      sleepScore = Math.max(0, Math.min(100, sleepScore)); // Clamp 0-100
+      sleepScore = Math.max(0, Math.min(100, sleepScore));
 
       return {
         dateKey,

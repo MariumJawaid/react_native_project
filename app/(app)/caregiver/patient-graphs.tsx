@@ -51,13 +51,13 @@ export default function PatientGraphs() {
   const [selectedPeriod, setSelectedPeriod] = useState<7 | 14>(7);
   const [loading, setLoading] = useState(true);
   const [patientId, setPatientId] = useState<string | null>(null);
-  
+
   // Core data
   const [chartData, setChartData] = useState<DayDataDisplay[]>([]);
   const [patientData, setPatientData] = useState<PatientSummary | null>(null);
   const [mriScans, setMriScans] = useState<MRIScan[]>([]);
   const [aiAnalyses, setAiAnalyses] = useState<AIAnalysis[]>([]);
-  
+
   // Summary metrics
   const [summaryBpm, setSummaryBpm] = useState(0);
   const [totalFalls, setTotalFalls] = useState(0);
@@ -107,7 +107,7 @@ export default function PatientGraphs() {
 
       // Fetch sensor readings from deviceData
       const readings = await extractDeviceDataReadings(patientId, selectedPeriod);
-      const aggregated = aggregateByDate(readings);
+      const aggregated = aggregateByDate(readings, selectedPeriod);
 
       // Add display labels
       const withLabels: DayDataDisplay[] = aggregated.map((day) => ({
@@ -122,15 +122,15 @@ export default function PatientGraphs() {
         const validBpms = withLabels
           .map((d) => d.avgBpm)
           .filter((b) => b > 0);
-        const avgBpm = validBpms.length > 0 
+        const avgBpm = validBpms.length > 0
           ? Math.round(validBpms.reduce((a, b) => a + b, 0) / validBpms.length)
           : 0;
-        
+
         const allMaxBpms = withLabels
           .map((d) => d.maxBpm)
           .filter((b) => b > 0);
         const max = allMaxBpms.length > 0 ? Math.max(...allMaxBpms) : 0;
-        
+
         const allMinBpms = withLabels
           .map((d) => d.minBpm)
           .filter((b) => b > 0);
@@ -330,7 +330,7 @@ export default function PatientGraphs() {
       if (score >= 50) return '#f59e0b';
       return '#10b981';
     };
-    
+
     const getLabel = () => {
       if (score >= 80) return 'High Risk';
       if (score >= 50) return 'Medium Risk';
@@ -416,7 +416,7 @@ export default function PatientGraphs() {
           </View>
         ) : (
           <>
-            
+
 
             {/* Summary Cards */}
             <View style={styles.summaryGrid}>
@@ -546,10 +546,10 @@ export default function PatientGraphs() {
               </View>
             )}
 
-            
-          
 
-         
+
+
+
           </>
         )}
       </ScrollView>
@@ -607,7 +607,7 @@ const styles = StyleSheet.create({
     paddingVertical: 100,
   },
   loadingText: { marginTop: 12, fontSize: 16, color: '#3b82f6', fontWeight: '500', textAlign: 'center' },
-  
+
   // Patient header
   patientHeader: {
     flexDirection: 'row',
@@ -617,7 +617,7 @@ const styles = StyleSheet.create({
   patientName: { fontSize: 20, fontWeight: '700', color: '#1e293b' },
   patientSubtext: { fontSize: 13, color: '#64748b', marginTop: 4 },
   patientStage: { fontSize: 12, color: '#7c3aed', fontWeight: '600', marginTop: 4 },
-  
+
   riskBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -644,7 +644,7 @@ const styles = StyleSheet.create({
   summaryGradient: { padding: 14, alignItems: 'center' },
   summaryValue: { fontSize: 22, fontWeight: '700', color: '#fff', marginTop: 6 },
   summaryLabel: { fontSize: 11, color: 'rgba(255,255,255,0.85)', marginTop: 3 },
-  
+
   statsRow: {
     flexDirection: 'row',
     gap: 12,
@@ -688,7 +688,7 @@ const styles = StyleSheet.create({
   chartLegend: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   legendDot: { width: 8, height: 8, borderRadius: 4 },
   legendText: { fontSize: 12, color: '#64748b', fontWeight: '500' },
-  
+
   chartContainer: { flexDirection: 'row' },
   yAxis: { width: 36, justifyContent: 'space-between', paddingVertical: 10 },
   axisLabel: { fontSize: 10, color: '#64748b', fontWeight: '500' },
@@ -732,7 +732,7 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   xAxisLabel: { fontSize: 10, color: '#64748b', fontWeight: '500' },
-  
+
   barChartContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -753,7 +753,7 @@ const styles = StyleSheet.create({
   },
   barValue: { fontSize: 10, fontWeight: '700', color: '#fff' },
   barLabel: { fontSize: 10, color: '#64748b', fontWeight: '500', marginTop: 6 },
-  
+
   // Analysis items
   analysisItem: {
     flexDirection: 'row',
@@ -766,7 +766,7 @@ const styles = StyleSheet.create({
   analysisLeft: { flex: 1 },
   analysisPrediction: { fontSize: 14, fontWeight: '600', color: '#1e293b' },
   analysisDate: { fontSize: 12, color: '#94a3b8', marginTop: 4 },
-  
+
   confidenceBadge: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -775,7 +775,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   confidenceText: { fontSize: 12, fontWeight: '700', color: '#fff' },
-  
+
   // MRI items
   mriItem: {
     flexDirection: 'row',
@@ -791,7 +791,7 @@ const styles = StyleSheet.create({
   mriDate: { fontSize: 11, color: '#94a3b8', marginTop: 2 },
   mriStats: { paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#dbeafe', borderRadius: 6 },
   mriStatText: { fontSize: 11, fontWeight: '600', color: '#1e40af' },
-  
+
   infoCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
